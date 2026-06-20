@@ -17,8 +17,9 @@ from .convert import convert_model
 from .doctor import run_doctor
 from .errors import MdlError
 from .library import Library, inventory
-from .ops import apply_removal, build_removal_plan, render_removal_plan, sync_all
+from .ops import apply_gc, apply_removal, build_gc_plan, build_removal_plan, render_gc_plan, render_removal_plan, sync_all
 from .paths import drive_letter, expand_path, human_size, lmstudio_target_dir, split_repo_id
+from .verify import verify_model
 
 app = typer.Typer(
     name="mdl",
@@ -69,6 +70,8 @@ def add(
     convert: bool = typer.Option(False, "--convert", help="Build the GGUF locally if no prebuilt repo exists."),
     remote: Optional[str] = typer.Option(None, "--remote", help="With --convert: stream weights from this Hub repo."),
     register: str = typer.Option("ollama,lmstudio", "--register", help="Runtimes to wire up (csv): ollama,lmstudio."),
+    force: bool = typer.Option(False, "--force", help="Re-download/verify even if files are already present."),
+    retries: int = typer.Option(0, "--retries", help="Retry a failed download N times (resuming) before giving up."),
 ) -> None:
     """Download a model once and wire it up to every runtime."""
     cfg = _load_config()
@@ -76,17 +79,42 @@ def add(
     add_model(
         cfg, lib, repo,
         gguf_repo=gguf_repo, quant=quant, raw=raw, gguf=gguf,
-        convert=convert, register=register, remote=remote,
+        convert=convert, register=register, remote=remote, force=force, retries=retries,
     )
 
 
 # -- list ----------------------------------------------------------------------------------
+def _format_cell(fi) -> str:
+    """Render a format cell: drive + size, plus a completeness marker.
+
+    Without ``--check`` we only have the local ``*.incomplete`` signal -> ``(partial:N)``.
+    With ``--check`` we have the Hub-verified state -> ``OK`` (complete) or ``NN%`` (partial).
+    """
+    if not fi.present and not fi.incomplete:
+        return "[dim]-[/]"
+    cell = f"{fi.drive} {human_size(fi.size)}"
+    if fi.state == "complete":
+        cell += " [green]OK[/]"
+    elif fi.state == "partial":
+        if fi.expected:
+            cell += f" [yellow]{int(100 * fi.size / fi.expected)}%[/]"
+        else:
+            cell += " [yellow]partial[/]"
+    elif fi.incomplete:
+        cell += f" [yellow](partial:{fi.incomplete})[/]"
+    return cell
+
+
 @app.command("list")
-def list_cmd() -> None:
+def list_cmd(
+    check: bool = typer.Option(
+        False, "--check", help="Reconcile against the Hub to show true completeness (slower, needs network)."
+    ),
+) -> None:
     """Show the library: formats, quants, runtimes, drives and sizes."""
     cfg = _load_config()
     lib = Library.load()
-    rows = inventory(cfg, lib)
+    rows = inventory(cfg, lib, check=check)
     if not rows:
         info("library is empty. Add one with [cyan]mdl add <repo>[/].")
         return
@@ -102,8 +130,8 @@ def list_cmd() -> None:
     for row in rows:
         raw_total += row.raw.size
         gguf_total += row.gguf.size
-        raw_cell = f"{row.raw.drive} {human_size(row.raw.size)}" if row.raw.present else "[dim]-[/]"
-        gguf_cell = f"{row.gguf.drive} {human_size(row.gguf.size)}" if row.gguf.present else "[dim]-[/]"
+        raw_cell = _format_cell(row.raw)
+        gguf_cell = _format_cell(row.gguf)
         runtimes = []
         if row.ollama:
             runtimes.append("ollama: " + ", ".join(row.ollama))
@@ -120,6 +148,8 @@ def list_cmd() -> None:
         f"gguf [{drive_letter(cfg.gguf_dir)}] {human_size(gguf_total)}   "
         f"grand {human_size(raw_total + gguf_total)}"
     )
+    if not check:
+        console.print("[dim]tip: `mdl list --check` verifies completeness against the Hub; `mdl verify <model>` repairs gaps.[/]")
 
 
 # -- rm ------------------------------------------------------------------------------------
@@ -155,6 +185,46 @@ def sync() -> None:
     cfg = _load_config()
     lib = Library.load()
     sync_all(cfg, lib)
+
+
+# -- gc ------------------------------------------------------------------------------------
+@app.command()
+def gc(
+    model: Optional[str] = typer.Argument(None, help="Limit to one model (id/name); default sweeps everything."),
+    locks: bool = typer.Option(False, "--locks", help="Also clear stale .lock files (unblocks a wedged cache)."),
+    force: bool = typer.Option(False, "--force", help="Include partials touched recently (skips the active-download guard)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Reclaim disk from abandoned ``*.incomplete`` download partials."""
+    cfg = _load_config()
+    lib = Library.load()
+    plan_out = build_gc_plan(cfg, lib, model=model, locks=locks, force=force)
+    if plan_out.is_empty():
+        if plan_out.protected:
+            info(f"nothing to reclaim ({len(plan_out.protected)} partial(s) protected as recently active; --force to include).")
+        else:
+            info("nothing to reclaim: no abandoned partials found.")
+        return
+    render_gc_plan(plan_out)
+    if not yes and not flags.dry_run:
+        if not typer.confirm("Proceed?"):
+            info("aborted.")
+            raise typer.Exit(1)
+    apply_gc(cfg, plan_out)
+
+
+# -- verify --------------------------------------------------------------------------------
+@app.command()
+def verify(
+    model: str = typer.Argument(..., help="Model id / name as shown by `mdl list` (or a repo id)."),
+    repair: bool = typer.Option(False, "--repair", help="Re-download any incomplete format (resumes from disk)."),
+    retries: int = typer.Option(0, "--retries", help="With --repair: retry a failed download N times."),
+) -> None:
+    """Check a model's files against the Hub and optionally repair gaps."""
+    cfg = _load_config()
+    lib = Library.load()
+    ok = verify_model(cfg, lib, model, repair=repair, retries=retries)
+    raise typer.Exit(0 if ok else 1)
 
 
 # -- convert -------------------------------------------------------------------------------

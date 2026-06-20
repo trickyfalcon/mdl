@@ -31,6 +31,10 @@ DEFAULTS: dict[str, str] = {
     "llamacpp_dir": r"C:\src\llama.cpp",
     "llama_quantize": r"C:\src\llama.cpp\build\bin\Release\llama-quantize.exe",
     "default_quant": "Q4_K_M",
+    # seconds before a stalled *classic* HF request aborts (xet uses its own stack -> see below)
+    "download_timeout": "30",
+    # seconds of zero on-disk progress before mdl kills+resumes a download (covers xet stalls)
+    "download_stall_timeout": "300",
 }
 
 #: keys whose values are filesystem paths (expanded + drive-checked)
@@ -40,6 +44,15 @@ PATH_KEYS = frozenset(
 
 CONFIG_DIR: Path = Path(platformdirs.user_config_dir("mdl", appauthor=False, roaming=True))
 CONFIG_PATH: Path = CONFIG_DIR / "config.toml"
+
+
+def _int_or(value: str, default: int) -> int:
+    """Parse a config string as a non-negative int, falling back to ``default``."""
+    try:
+        n = int(str(value).strip())
+        return n if n >= 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _dump_value(value: str) -> str:
@@ -142,6 +155,14 @@ class Config:
     @property
     def default_quant(self) -> str:
         return self.raw("default_quant")
+
+    @property
+    def download_timeout(self) -> int:
+        return _int_or(self.raw("download_timeout"), 30)
+
+    @property
+    def download_stall_timeout(self) -> int:
+        return _int_or(self.raw("download_stall_timeout"), 300)
 
     # -- persistence ----------------------------------------------------------------------
     def save(self) -> None:

@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
+from . import hub
 from .config import CONFIG_DIR
 from .errors import MdlError
 from .hub import cache_dir
@@ -52,6 +53,9 @@ class FormatInfo:
     drive: str
     size: int
     path: Path
+    incomplete: int = 0           # *.incomplete markers on disk (local, always computed)
+    expected: int | None = None   # total bytes per the Hub (only with --check)
+    state: str = ""               # complete|partial|missing (only with --check)
 
 
 @dataclass
@@ -161,23 +165,43 @@ def _scan_gguf(gdir: Path) -> list[Path]:
         return []
 
 
-def inventory(cfg, library: Library) -> list[Row]:
-    """Build display rows by scanning the real stores for each recorded model."""
+def inventory(cfg, library: Library, *, check: bool = False) -> list[Row]:
+    """Build display rows by scanning the real stores for each recorded model.
+
+    ``check=True`` additionally reconciles each format against the Hub (one metadata call
+    per repo) to mark it complete/partial and show how many bytes are expected -- slower and
+    needs network, so it is opt-in. The local ``incomplete`` marker count is always computed.
+    """
     rows: list[Row] = []
     for rec in library.records.values():
         # raw
         raw_present, raw_size, raw_path = False, 0, Path("")
+        raw_incomplete, raw_expected, raw_state = 0, None, ""
         if rec.raw_repo:
             raw_path = cache_dir(cfg, rec.raw_repo)
             raw_size = path_size(raw_path)
             raw_present = raw_size > 0
-        raw_info = FormatInfo(raw_present, drive_letter(cfg.hf_home), raw_size, raw_path)
+            raw_incomplete = hub.incomplete_count(cfg, rec.raw_repo)
+            if check:
+                st = hub.raw_status(cfg, rec.raw_repo)
+                raw_expected, raw_state, raw_incomplete = st.expected_bytes, st.state, st.incomplete
+        raw_info = FormatInfo(
+            raw_present, drive_letter(cfg.hf_home), raw_size, raw_path,
+            incomplete=raw_incomplete, expected=raw_expected, state=raw_state,
+        )
 
         # gguf
         gdir = rec.gguf_dir_for(cfg.gguf_dir)
         gguf_files = _scan_gguf(gdir)
         gguf_size = path_size(gdir) if gguf_files else 0
-        gguf_info = FormatInfo(bool(gguf_files), drive_letter(cfg.gguf_dir), gguf_size, gdir)
+        gguf_expected, gguf_state = None, ""
+        if check and rec.gguf_repo and rec.quants:
+            st = hub.gguf_status(cfg, rec.gguf_repo, rec.quants[0], gdir)
+            gguf_expected, gguf_state = st.expected_bytes, st.state
+        gguf_info = FormatInfo(
+            bool(gguf_files), drive_letter(cfg.gguf_dir), gguf_size, gdir,
+            expected=gguf_expected, state=gguf_state,
+        )
 
         quants = sorted(set(rec.quants) | {q for f in gguf_files if (q := detect_quant(f.name))})
 

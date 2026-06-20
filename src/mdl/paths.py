@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "lmstudio_target_dir",
     "human_size",
     "path_size",
+    "free_space",
     "drive_letter",
     "same_path",
     "quant_glob",
@@ -100,6 +102,28 @@ def path_size(path: str | os.PathLike[str]) -> int:
         except OSError:
             continue
     return total
+
+
+def free_space(path: str | os.PathLike[str]) -> int | None:
+    """Free bytes on the volume that would hold ``path`` (its drive root), or ``None``.
+
+    Walks up to the nearest existing ancestor so it works for a target dir that doesn't
+    exist yet; returns ``None`` if the drive isn't mounted/queryable.
+    """
+    p = Path(path)
+    drive = p.drive
+    probe = Path(drive + "\\") if drive else p
+    for _ in range(64):
+        if probe.exists():
+            try:
+                return shutil.disk_usage(probe).free
+            except OSError:
+                return None
+        parent = probe.parent
+        if parent == probe:
+            return None
+        probe = parent
+    return None
 
 
 def drive_letter(path: str | os.PathLike[str]) -> str:

@@ -44,6 +44,18 @@ def test_config_expanded_paths():
     assert cfg.default_quant == "Q4_K_M"
 
 
+def test_download_timeout_accessors_and_fallbacks():
+    cfg = Config(dict(DEFAULTS))
+    assert cfg.download_timeout == 30
+    assert cfg.download_stall_timeout == 300
+    cfg.values["download_stall_timeout"] = "not-a-number"
+    assert cfg.download_stall_timeout == 300  # bad value -> default
+    cfg.values["download_timeout"] = "-5"
+    assert cfg.download_timeout == 30  # negative -> default
+    cfg.values["download_timeout"] = "120"
+    assert cfg.download_timeout == 120  # valid override honoured
+
+
 def test_config_rejects_unknown_key():
     cfg = Config(dict(DEFAULTS))
     import pytest
