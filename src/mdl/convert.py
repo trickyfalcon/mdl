@@ -119,6 +119,7 @@ def convert_model(
         proc = run(
             convert_command(cfg, source, final, remote=remote, outtype=quant.lower()),
             label=f"convert_hf_to_gguf.py --outtype {quant.lower()} -> {final}",
+            stream=True,
         )
         _check(proc, "conversion")
         return final
@@ -128,6 +129,7 @@ def convert_model(
     proc = run(
         convert_command(cfg, source, intermediate, remote=remote, outtype="f16"),
         label=f"convert_hf_to_gguf.py --outtype f16 -> {intermediate}",
+        stream=True,
     )
     _check(proc, "conversion")
 
@@ -135,6 +137,7 @@ def convert_model(
     proc = run(
         quantize_command(cfg, intermediate, final, quant_up),
         label=f"llama-quantize {intermediate.name} {final.name} {quant_up}",
+        stream=True,
     )
     _check(proc, "quantization")
 
@@ -150,5 +153,7 @@ def convert_model(
 
 def _check(proc, what: str) -> None:
     if proc is not None and proc.returncode != 0:
+        # streamed runs capture nothing -> the real output already scrolled past on screen
         tail = "\n".join(output_of(proc).strip().splitlines()[-8:])
-        raise ConvertError(f"{what} failed.\n{tail}".rstrip())
+        msg = f"{what} failed.\n{tail}" if tail else f"{what} failed. See the output above."
+        raise ConvertError(msg.rstrip())

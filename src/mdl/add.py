@@ -19,6 +19,7 @@ from . import hub
 from .console import console, info, is_dry, step, success, warn
 from .errors import MdlError
 from .library import Library
+from .locks import repo_lock
 from .paths import drive_letter, free_space, human_size, lmstudio_target_dir, split_repo_id
 from .registry import lmstudio, ollama
 
@@ -96,6 +97,35 @@ def add_model(
             f"'{raw_repo}' is not a valid Hugging Face repo id (expected owner/name).",
             hint="e.g. Qwen/Qwen3-32B",
         )
+    # Serialize concurrent adds of the *same* repo (a no-op under --dry-run, which writes nothing).
+    with repo_lock(raw_repo, enabled=not is_dry()) as acquired:
+        if not acquired:
+            raise MdlError(
+                f"another `mdl add` for '{raw_repo}' is already running.",
+                hint="Wait for it to finish (its download resumes), or add a different model.",
+            )
+        _add_model_locked(
+            cfg, library, raw_repo,
+            gguf_repo=gguf_repo, quant=quant, raw=raw, gguf=gguf,
+            convert=convert, register=register, remote=remote, force=force, retries=retries,
+        )
+
+
+def _add_model_locked(
+    cfg,
+    library: Library,
+    raw_repo: str,
+    *,
+    gguf_repo: str | None = None,
+    quant: str | None = None,
+    raw: bool = True,
+    gguf: bool = True,
+    convert: bool = False,
+    register: str = "ollama,lmstudio",
+    remote: str | None = None,
+    force: bool = False,
+    retries: int = 0,
+) -> None:
     quant = quant or cfg.default_quant
     runtimes = parse_register(register)
     _owner, name = split_repo_id(raw_repo)
