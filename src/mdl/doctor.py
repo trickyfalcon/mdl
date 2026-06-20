@@ -97,16 +97,32 @@ def check_ollama(cfg) -> Check:
     return Check("ollama service", WARN, f"{exe} found but {detail}", fix="Start Ollama (`ollama serve` or the app).")
 
 
-def check_ollama_models(cfg) -> Check:
-    env = os.environ.get("OLLAMA_MODELS")
-    want = cfg.ollama_models
+def _ollama_has_data(path) -> bool:
+    """True if an Ollama models dir actually holds blobs -- i.e. the daemon writes there."""
+    try:
+        return (Path(path) / "blobs").is_dir()
+    except OSError:
+        return False
+
+
+def _ollama_models_check(env: str | None, want: Path, default_loc: Path) -> Check:
+    """Pure decision for the OLLAMA_MODELS check (separated so it's unit-testable)."""
     default_home = "%USERPROFILE%\\.ollama" if IS_WINDOWS else "~/.ollama"
     if not env:
+        extra = f"; existing blobs are in {default_loc}" if _ollama_has_data(default_loc) else ""
         return Check(
-            "OLLAMA_MODELS", WARN, f"not set (Ollama stores blobs under {default_home} by default)",
+            "OLLAMA_MODELS", WARN, f"not set (Ollama stores blobs under {default_home} by default{extra})",
             fix=f"{env_set_hint('OLLAMA_MODELS', str(want))}   then restart Ollama",
         )
     env_path = expand_path(env)  # the env value may itself contain %VARS%/$VARS
+    # Daemon/env mismatch: the env points somewhere with no blobs, but the default location HAS
+    # them -> the running daemon was started before the env var and ignores it (needs a restart).
+    if _ollama_has_data(default_loc) and not _ollama_has_data(env_path) and not same_path(env_path, default_loc):
+        return Check(
+            "OLLAMA_MODELS", WARN,
+            f"set to {env_path}, but Ollama's blobs are in {default_loc} -- the running daemon predates the env var",
+            fix="Fully quit & reopen Ollama so it reads OLLAMA_MODELS, then re-import (`mdl sync`).",
+        )
     # On Windows, warn when imports land on the system drive (C:), where space is precious.
     if IS_WINDOWS and drive_letter(env_path) == "C:":
         return Check(
@@ -115,6 +131,12 @@ def check_ollama_models(cfg) -> Check:
         )
     suffix = " (matches config)" if same_path(env_path, want) else f" (config suggests {want})"
     return Check("OLLAMA_MODELS", OK, str(env_path) + suffix)
+
+
+def check_ollama_models(cfg) -> Check:
+    return _ollama_models_check(
+        os.environ.get("OLLAMA_MODELS"), cfg.ollama_models, Path.home() / ".ollama" / "models"
+    )
 
 
 def check_llamacpp(cfg) -> Check:
