@@ -1,6 +1,16 @@
-"""Tests for pure path/repo helpers."""
+"""Tests for pure path/repo helpers.
 
+``expand_path``/``drive_letter``/``same_path`` delegate to ``os.path``/``pathlib``, whose
+semantics are intentionally platform-specific: ``%VAR%`` expansion, drive letters, and
+case-insensitive backslash paths only hold on Windows. Those assertions are gated with
+``windows_only``; each has a POSIX companion so the cross-platform contract is covered on
+every OS.
+"""
+
+import os
 from pathlib import Path
+
+import pytest
 
 from mdl.paths import (
     detect_quant,
@@ -13,21 +23,39 @@ from mdl.paths import (
     split_repo_id,
 )
 
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows path semantics")
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX path semantics")
 
+
+@windows_only
 def test_expand_path_expands_percent_userprofile(monkeypatch):
     monkeypatch.setenv("USERPROFILE", r"C:\Users\tester")
     assert expand_path(r"%USERPROFILE%\.lmstudio\models") == Path(r"C:\Users\tester\.lmstudio\models")
 
 
+@windows_only
 def test_expand_path_expands_percent_appdata(monkeypatch):
     monkeypatch.setenv("APPDATA", r"C:\Users\tester\AppData\Roaming")
     assert expand_path(r"%APPDATA%\mdl") == Path(r"C:\Users\tester\AppData\Roaming\mdl")
 
 
+@windows_only
 def test_expand_path_expands_tilde(monkeypatch):
     monkeypatch.delenv("HOME", raising=False)  # HOME would win over USERPROFILE on Windows
     monkeypatch.setenv("USERPROFILE", r"C:\Users\tester")
     assert expand_path(r"~\models") == Path(r"C:\Users\tester\models")
+
+
+@posix_only
+def test_expand_path_expands_dollar_var(monkeypatch):
+    monkeypatch.setenv("HOME", "/home/tester")
+    assert expand_path("$HOME/.lmstudio/models") == Path("/home/tester/.lmstudio/models")
+
+
+@posix_only
+def test_expand_path_expands_tilde_posix(monkeypatch):
+    monkeypatch.setenv("HOME", "/home/tester")
+    assert expand_path("~/models") == Path("/home/tester/models")
 
 
 def test_expand_path_leaves_plain_path():
@@ -69,16 +97,34 @@ def test_human_size():
     assert human_size(5 * 1024 ** 3) == "5.0 GB"
 
 
+@windows_only
 def test_drive_letter():
     assert drive_letter(r"D:\models\gguf") == "D:"
     assert drive_letter(r"h:\x") == "H:"
 
 
+@posix_only
+def test_drive_letter_posix():
+    # POSIX has no drive component; absolute and relative paths alike report "".
+    assert drive_letter("/Users/x/models/gguf") == ""
+    assert drive_letter("models/gguf") == ""
+
+
+@windows_only
 def test_same_path_case_and_sep_insensitive():
     assert same_path(r"D:\models\gguf", "d:\\models\\gguf")
     assert same_path("D:\\models\\gguf", "D:\\models\\gguf\\")
     assert same_path(r"D:\a\..\b", r"D:\b")
     assert not same_path(r"D:\models\gguf", r"C:\models\gguf")
+
+
+@posix_only
+def test_same_path_posix():
+    assert same_path("/models/gguf", "/models/gguf/")
+    assert same_path("/models/a/../b", "/models/b")
+    assert not same_path("/models/gguf", "/other/gguf")
+    # POSIX paths are case-sensitive.
+    assert not same_path("/Models/gguf", "/models/gguf")
 
 
 def test_quant_glob():

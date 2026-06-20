@@ -59,6 +59,58 @@ def parse_register(value: str) -> set[str]:
     return out
 
 
+def _register_from_record(rec) -> str:
+    """Rebuild the ``--register`` csv from what a library record actually has wired up."""
+    runtimes = []
+    if rec.ollama:
+        runtimes.append("ollama")
+    if rec.lmstudio:
+        runtimes.append("lmstudio")
+    return ",".join(runtimes) if runtimes else "none"
+
+
+def resume_params(
+    library: Library,
+    model: str,
+    *,
+    gguf_repo: str | None = None,
+    quant: str | None = None,
+    raw: bool | None = None,
+    gguf: bool | None = None,
+    register: str | None = None,
+) -> dict:
+    """Resolve ``add_model`` kwargs for a *resume*: fill anything unset from the library record.
+
+    For a tracked model, unspecified options default to how it was originally added (its repos,
+    quant and wired-up runtimes). For an untracked repo id we resume the raw download only --
+    the common "I pulled raw weights and it died" case -- since there's no record to infer from.
+    Explicit flags always win. ``raw``/``gguf`` are tri-state (``None`` = infer).
+    """
+    rec = library.find(model)
+    if rec is not None:
+        return {
+            "raw_repo": rec.raw_repo or rec.model,
+            "gguf_repo": gguf_repo if gguf_repo is not None else rec.gguf_repo,
+            "quant": quant if quant is not None else (rec.quants[0] if rec.quants else None),
+            "raw": raw if raw is not None else bool(rec.raw_repo),
+            "gguf": gguf if gguf is not None else bool(rec.gguf_repo or rec.quants),
+            "register": register if register is not None else _register_from_record(rec),
+        }
+    if "/" not in model:
+        raise MdlError(
+            f"'{model}' is not in the library and is not a repo id.",
+            hint="Run `mdl list` to see tracked models, or pass owner/name.",
+        )
+    return {
+        "raw_repo": model,
+        "gguf_repo": gguf_repo,
+        "quant": quant,
+        "raw": True if raw is None else raw,
+        "gguf": False if gguf is None else gguf,
+        "register": "none" if register is None else register,
+    }
+
+
 def pick_primary_gguf(target_dir: Path | None, quant: str) -> Path | None:
     """Choose the single GGUF to hand to Ollama (prefer a non-split file for the quant)."""
     if not target_dir or not target_dir.exists():
