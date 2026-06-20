@@ -92,7 +92,8 @@ def _format_cell(fi) -> str:
     """
     if not fi.present and not fi.incomplete:
         return "[dim]-[/]"
-    cell = f"{fi.drive} {human_size(fi.size)}"
+    loc = f"{fi.drive} " if fi.drive else ""  # POSIX has no drive letter
+    cell = f"{loc}{human_size(fi.size)}"
     if fi.state == "complete":
         cell += " [green]OK[/]"
     elif fi.state == "partial":
@@ -144,8 +145,8 @@ def list_cmd(
         )
     console.print(table)
     console.print(
-        f"[bold]totals[/]  raw [{drive_letter(cfg.hf_home)}] {human_size(raw_total)}   "
-        f"gguf [{drive_letter(cfg.gguf_dir)}] {human_size(gguf_total)}   "
+        f"[bold]totals[/]  raw [{drive_letter(cfg.hf_home) or 'local'}] {human_size(raw_total)}   "
+        f"gguf [{drive_letter(cfg.gguf_dir) or 'local'}] {human_size(gguf_total)}   "
         f"grand {human_size(raw_total + gguf_total)}"
     )
     if not check:

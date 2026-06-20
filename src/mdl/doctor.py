@@ -11,6 +11,7 @@ from rich.table import Table
 
 from .console import console, is_dry
 from .hub import find_hf_cli, whoami
+from .osenv import IS_WINDOWS, env_set_hint, exe
 from .paths import drive_letter, expand_path, same_path
 from .registry import lmstudio, ollama
 
@@ -48,7 +49,7 @@ def _writable(path: Path) -> tuple[bool | None, str]:
 
 def check_drive(cfg, key: str, label: str) -> Check:
     path = cfg.expanded(key)
-    drive = drive_letter(path) or "(no drive)"
+    drive = drive_letter(path) or "local"
     res, detail = _writable(path)
     if res is None:
         return Check(label, FAIL, detail, fix=f"Mount {drive} or change `{key}` in config.")
@@ -94,16 +95,18 @@ def check_ollama(cfg) -> Check:
 def check_ollama_models(cfg) -> Check:
     env = os.environ.get("OLLAMA_MODELS")
     want = cfg.ollama_models
+    default_home = "%USERPROFILE%\\.ollama" if IS_WINDOWS else "~/.ollama"
     if not env:
         return Check(
-            "OLLAMA_MODELS", WARN, "not set (Ollama stores blobs under C:\\Users\\<you>\\.ollama by default)",
-            fix=f'setx OLLAMA_MODELS "{want}"   then restart Ollama',
+            "OLLAMA_MODELS", WARN, f"not set (Ollama stores blobs under {default_home} by default)",
+            fix=f"{env_set_hint('OLLAMA_MODELS', str(want))}   then restart Ollama",
         )
-    env_path = expand_path(env)  # the env value may itself contain %VARS%
-    if drive_letter(env_path) == "C:":
+    env_path = expand_path(env)  # the env value may itself contain %VARS%/$VARS
+    # On Windows, warn when imports land on the system drive (C:), where space is precious.
+    if IS_WINDOWS and drive_letter(env_path) == "C:":
         return Check(
             "OLLAMA_MODELS", WARN, f"{env_path} (on C: -- import copies land on the system drive)",
-            fix=f'Point at the fast disk: setx OLLAMA_MODELS "{want}"   then restart Ollama',
+            fix=f"Point at the fast disk: {env_set_hint('OLLAMA_MODELS', str(want))}   then restart Ollama",
         )
     suffix = " (matches config)" if same_path(env_path, want) else f" (config suggests {want})"
     return Check("OLLAMA_MODELS", OK, str(env_path) + suffix)
@@ -113,7 +116,7 @@ def check_llamacpp(cfg) -> Check:
     conv, quant = cfg.convert_script, cfg.llama_quantize
     detail = (
         f"convert_hf_to_gguf.py: {'found' if conv.exists() else 'MISSING'}; "
-        f"llama-quantize.exe: {'found' if quant.exists() else 'MISSING'}"
+        f"{exe('llama-quantize')}: {'found' if quant.exists() else 'MISSING'}"
     )
     if conv.exists() and quant.exists():
         return Check("llama.cpp", OK, detail)
@@ -139,13 +142,16 @@ def check_hf_home(cfg) -> Check:
     env = os.environ.get("HF_HOME")
     if not env:
         return Check(
-            "HF_HOME env", WARN, "not set (transformers/vLLM won't share mdl's H: cache)",
-            fix=f'setx HF_HOME "{cfg.hf_home}"   then open a new shell',
+            "HF_HOME env", WARN, "not set (transformers/vLLM won't share mdl's cache)",
+            fix=f"{env_set_hint('HF_HOME', str(cfg.hf_home))}   then open a new shell",
         )
     env_path = expand_path(env)
     if same_path(env_path, cfg.hf_home):
         return Check("HF_HOME env", OK, f"{env_path} (matches config)")
-    return Check("HF_HOME env", WARN, f"{env_path} != config hf_home ({cfg.hf_home})", fix=f'setx HF_HOME "{cfg.hf_home}"')
+    return Check(
+        "HF_HOME env", WARN, f"{env_path} != config hf_home ({cfg.hf_home})",
+        fix=env_set_hint("HF_HOME", str(cfg.hf_home)),
+    )
 
 
 def collect(cfg) -> list[Check]:

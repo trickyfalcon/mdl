@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .console import info, warn
 from .errors import DownloadError, GatedRepoError, MdlError, ToolNotFoundError
+from .osenv import env_set_hint, exe
 from .paths import drive_letter, quant_glob, split_repo_id
 from .proc import run
 
@@ -49,8 +50,8 @@ def download_env(cfg) -> dict:
 
 
 def find_hf_cli() -> Path:
-    """Locate ``hf.exe`` -- prefer the one next to the running interpreter (our venv)."""
-    sibling = Path(sys.executable).with_name("hf.exe")
+    """Locate the ``hf`` CLI -- prefer the one next to the running interpreter (our venv)."""
+    sibling = Path(sys.executable).with_name(exe("hf"))
     if sibling.exists():
         return sibling
     found = shutil.which("hf")
@@ -383,6 +384,6 @@ def print_hf_home_hint(cfg) -> None:
     """One-time nudge to make transformers/vLLM share the same cache as mdl."""
     if not os.environ.get("HF_HOME"):
         info(
-            f'[dim]hint:[/] run [cyan]setx HF_HOME "{cfg.hf_home}"[/] so transformers/vLLM '
-            "use the same cache (new shells only)."
+            f"[dim]hint:[/] run [cyan]{env_set_hint('HF_HOME', str(cfg.hf_home))}[/] so "
+            "transformers/vLLM use the same cache."
         )

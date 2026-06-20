@@ -244,7 +244,7 @@ def _add_model_locked(
 def _summary(cfg, model, raw_done, target_dir, quant, ollama_names, lmstudio_done) -> None:
     console.print("\n[bold]Summary[/]")
     console.print(f"  model     : {model}")
-    console.print(f"  raw       : {'H: HF cache' if raw_done else '[dim]skipped[/]'}")
+    console.print(f"  raw       : {(drive_letter(cfg.hf_home) or 'local') + ' HF cache' if raw_done else '[dim]skipped[/]'}")
     if target_dir:
         console.print(f"  gguf      : {quant} -> {target_dir}")
     else:

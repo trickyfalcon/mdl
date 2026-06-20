@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .console import is_dry, step, success, warn
 from .errors import ConvertError, ToolNotFoundError
+from .osenv import exe
 from .proc import output_of, run
 
 #: quant labels that are produced directly by the converter (no quantize step)
@@ -30,7 +31,7 @@ def _uv_exe() -> Path | None:
     found = shutil.which("uv")
     if found:
         return Path(found)
-    candidate = Path.home() / ".local" / "bin" / "uv.exe"
+    candidate = Path.home() / ".local" / "bin" / exe("uv")
     return candidate if candidate.exists() else None
 
 
@@ -80,7 +81,7 @@ def ensure_tools(cfg, *, need_quantize: bool) -> None:
         )
     if need_quantize and not cfg.llama_quantize.exists():
         raise ToolNotFoundError(
-            f"llama-quantize.exe not found at {cfg.llama_quantize}.",
+            f"{exe('llama-quantize')} not found at {cfg.llama_quantize}.",
             hint="Build llama.cpp (cmake --build build --config Release) or set `llama_quantize` in config.",
         )
 
