@@ -42,26 +42,29 @@ New config keys: `download_timeout` (30s), `download_stall_timeout` (300s).
 - Config: `%APPDATA%\mdl\config.toml` (Win) / `~/.config/mdl/config.toml` (POSIX), via
   platformdirs.
 
-## Next: validate on macOS
+## macOS validation — DONE (2026-06-20, Apple Silicon, macOS 15 / Darwin 25.5)
 
-POSIX paths are built-correct and unit-tested but **not yet run on real Mac/Linux hardware.**
-On the Mac:
+Ran the full ramp on real Mac hardware. Everything POSIX works:
+- `uv sync` clean; `uv run mdl doctor` — drives resolve to `~/models/hf` + `~/models/gguf`
+  (both OK/writable), `hf` CLI found. Expected WARN/FAIL on a bare box: no ollama, no
+  llama.cpp, not HF-logged-in, `HF_HOME`/`OLLAMA_MODELS` unset, LM Studio dir mismatch.
+- `mdl add HuggingFaceTB/SmolLM2-135M-Instruct --no-gguf --register none` — downloaded to
+  the HF cache; re-run correctly **skipped** (dedup). `list` / `list --check` (Hub-verified
+  **OK**) / `verify` (**100% complete**) / `rm` all behaved. Smoke model removed afterward.
+- `uv run pytest` — **88 passed, 5 skipped** on macOS.
 
-```bash
-git pull origin main      # or clone
-uv sync
-uv run mdl doctor         # expect ~/models/hf, ~/models/gguf; drives show "local"
-uv run mdl add HuggingFaceTB/SmolLM2-135M-Instruct --no-gguf --register none   # smoke test
-uv run pytest -q
-```
+**Test fix shipped this session:** `tests/test_paths.py` had 5 failures on POSIX — they
+asserted Windows-only path semantics (`%VAR%` expansion, drive letters, case-insensitive
+backslash paths) that the OS-delegating helpers can't reproduce off Windows. Gated those with
+`@windows_only` and added `@posix_only` companions (`$VAR`/`~` expansion, empty drive, POSIX
+`same_path`). The production code was already correct — this was a test-portability gap.
+Windows still runs its original 89 (now 4 of them skip there).
 
-Watch-items most likely to need a tweak on macOS:
-- LM Studio settings path — assumed `~/.lmstudio/settings.json` (see `registry/lmstudio.py`).
-- `uv` / `hf` / `ollama` discoverable under zsh PATH (`mdl doctor` reports this).
+Watch-items confirmed fine on macOS:
+- LM Studio dir default `~/.lmstudio/models` is correct (LM Studio not installed here, so
+  untested live, but the path/default is right).
+- `uv` / `hf` discoverable under zsh PATH; `ollama` not installed (expected FAIL).
 - Stall watchdog tree-kill on POSIX is `terminate → kill` (fine for single-process `hf`).
-
-Set the commit identity on the new machine if needed:
-`git config user.name trickyfalcon && git config user.email mischievousmo@outlook.com`
 
 ## After that: NAS phase (own branch, e.g. `feature/nas`)
 
