@@ -104,11 +104,15 @@ def import_gguf(cfg, gguf_path: Path, name: str, *, force: bool = False) -> str:
     tmpdir = Path(tempfile.mkdtemp(prefix="mdl-ollama-"))
     modelfile = tmpdir / "Modelfile"
     modelfile.write_text(content, encoding="utf-8")
+    # `ollama create` copies the whole GGUF into the blob store -- minutes for a big model.
+    # Stream it (inherit the terminal) so its progress shows live instead of looking frozen.
+    step(f"ollama: importing '{name}' -- copies the GGUF into Ollama's blob store (can take a while)")
     try:
         proc = run(
             [cfg.ollama_bin, "create", name, "-f", str(modelfile)],
             env=_ollama_env(cfg),
             label=f"{cfg.ollama_bin} create {name} -f Modelfile",
+            stream=True,
         )
     except FileNotFoundError as exc:
         raise ToolNotFoundError(
@@ -123,13 +127,14 @@ def import_gguf(cfg, gguf_path: Path, name: str, *, force: bool = False) -> str:
             pass
 
     if proc is not None and proc.returncode != 0:
-        out = output_of(proc).strip()
-        if "connection refused" in out.lower() or "could not connect" in out.lower():
+        # streamed -> nothing captured; probe the daemon to explain the failure
+        running, _ = ollama_running(cfg)
+        if not running:
             raise RegistrationError(
                 "Ollama service is not running.",
                 hint="Start Ollama (run `ollama serve` or launch the app) and retry.",
             )
-        raise RegistrationError(f"`ollama create {name}` failed.\n{out}".rstrip())
+        raise RegistrationError(f"`ollama create {name}` failed (see the output above).")
     if proc is not None:
         success(f"ollama: imported as [bold]{name}[/]")
     return name
