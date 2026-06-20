@@ -19,19 +19,11 @@ from pathlib import Path
 import platformdirs
 
 from .errors import ConfigError
+from .osenv import default_config
 from .paths import expand_path
 
-# --- defaults (exactly the schema from the spec) -----------------------------------------
-DEFAULTS: dict[str, str] = {
-    "hf_home": r"H:\models\hf",
-    "gguf_dir": r"D:\models\gguf",
-    "lmstudio_dir": r"%USERPROFILE%\.lmstudio\models",
-    "ollama_models": r"D:\models\ollama",
-    "ollama_bin": "ollama",
-    "llamacpp_dir": r"C:\src\llama.cpp",
-    "llama_quantize": r"C:\src\llama.cpp\build\bin\Release\llama-quantize.exe",
-    "default_quant": "Q4_K_M",
-}
+# --- defaults (per-OS: Windows uses drive letters, POSIX mirrors under ~; see osenv) ------
+DEFAULTS: dict[str, str] = default_config()
 
 #: keys whose values are filesystem paths (expanded + drive-checked)
 PATH_KEYS = frozenset(
@@ -40,6 +32,15 @@ PATH_KEYS = frozenset(
 
 CONFIG_DIR: Path = Path(platformdirs.user_config_dir("mdl", appauthor=False, roaming=True))
 CONFIG_PATH: Path = CONFIG_DIR / "config.toml"
+
+
+def _int_or(value: str, default: int) -> int:
+    """Parse a config string as a non-negative int, falling back to ``default``."""
+    try:
+        n = int(str(value).strip())
+        return n if n >= 0 else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _dump_value(value: str) -> str:
@@ -143,13 +144,21 @@ class Config:
     def default_quant(self) -> str:
         return self.raw("default_quant")
 
+    @property
+    def download_timeout(self) -> int:
+        return _int_or(self.raw("download_timeout"), 30)
+
+    @property
+    def download_stall_timeout(self) -> int:
+        return _int_or(self.raw("download_stall_timeout"), 300)
+
     # -- persistence ----------------------------------------------------------------------
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lines = [
             "# mdl configuration",
             "# Paths use TOML literal strings (single quotes) so Windows backslashes are",
-            "# NOT treated as escapes. %VARS% and a leading ~ are expanded at runtime.",
+            "# NOT treated as escapes. %VARS% / $VARS and a leading ~ are expanded at runtime.",
             "",
         ]
         # known keys first, in canonical order, then any extras the user added

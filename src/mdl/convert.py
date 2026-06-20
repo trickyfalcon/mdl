@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .console import is_dry, step, success, warn
 from .errors import ConvertError, ToolNotFoundError
+from .osenv import exe
 from .proc import output_of, run
 
 #: quant labels that are produced directly by the converter (no quantize step)
@@ -30,7 +31,7 @@ def _uv_exe() -> Path | None:
     found = shutil.which("uv")
     if found:
         return Path(found)
-    candidate = Path.home() / ".local" / "bin" / "uv.exe"
+    candidate = Path.home() / ".local" / "bin" / exe("uv")
     return candidate if candidate.exists() else None
 
 
@@ -80,7 +81,7 @@ def ensure_tools(cfg, *, need_quantize: bool) -> None:
         )
     if need_quantize and not cfg.llama_quantize.exists():
         raise ToolNotFoundError(
-            f"llama-quantize.exe not found at {cfg.llama_quantize}.",
+            f"{exe('llama-quantize')} not found at {cfg.llama_quantize}.",
             hint="Build llama.cpp (cmake --build build --config Release) or set `llama_quantize` in config.",
         )
 
@@ -119,6 +120,7 @@ def convert_model(
         proc = run(
             convert_command(cfg, source, final, remote=remote, outtype=quant.lower()),
             label=f"convert_hf_to_gguf.py --outtype {quant.lower()} -> {final}",
+            stream=True,
         )
         _check(proc, "conversion")
         return final
@@ -128,6 +130,7 @@ def convert_model(
     proc = run(
         convert_command(cfg, source, intermediate, remote=remote, outtype="f16"),
         label=f"convert_hf_to_gguf.py --outtype f16 -> {intermediate}",
+        stream=True,
     )
     _check(proc, "conversion")
 
@@ -135,6 +138,7 @@ def convert_model(
     proc = run(
         quantize_command(cfg, intermediate, final, quant_up),
         label=f"llama-quantize {intermediate.name} {final.name} {quant_up}",
+        stream=True,
     )
     _check(proc, "quantization")
 
@@ -150,5 +154,7 @@ def convert_model(
 
 def _check(proc, what: str) -> None:
     if proc is not None and proc.returncode != 0:
+        # streamed runs capture nothing -> the real output already scrolled past on screen
         tail = "\n".join(output_of(proc).strip().splitlines()[-8:])
-        raise ConvertError(f"{what} failed.\n{tail}".rstrip())
+        msg = f"{what} failed.\n{tail}" if tail else f"{what} failed. See the output above."
+        raise ConvertError(msg.rstrip())

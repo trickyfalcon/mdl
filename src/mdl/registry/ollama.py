@@ -113,7 +113,7 @@ def import_gguf(cfg, gguf_path: Path, name: str, *, force: bool = False) -> str:
     except FileNotFoundError as exc:
         raise ToolNotFoundError(
             f"'{cfg.ollama_bin}' was not found.",
-            hint="Install Ollama and ensure ollama.exe is on PATH, or set `ollama_bin` in config.",
+            hint="Install Ollama and ensure the `ollama` binary is on PATH, or set `ollama_bin` in config.",
         ) from exc
     finally:
         try:

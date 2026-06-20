@@ -16,13 +16,33 @@ from pathlib import Path
 
 from . import convert as convert_mod
 from . import hub
-from .console import console, info, is_dry, step, warn
+from .console import console, info, is_dry, step, success, warn
 from .errors import MdlError
 from .library import Library
-from .paths import lmstudio_target_dir, split_repo_id
+from .locks import repo_lock
+from .paths import drive_letter, free_space, human_size, lmstudio_target_dir, split_repo_id
 from .registry import lmstudio, ollama
 
 _VALID_RUNTIMES = {"ollama", "lmstudio"}
+
+
+def _report_and_preflight(status: "hub.DownloadStatus", dest, label: str) -> None:
+    """Tell the user what's already on disk (so a resume doesn't look like a fresh start)
+    and warn if the destination drive is too full for what's left to download."""
+    if status.present_bytes:
+        msg = f"{label}: resuming -- {human_size(status.present_bytes)} already on disk"
+        if status.incomplete:
+            msg += f", {status.incomplete} partial file(s)"
+        if status.remaining_bytes is not None:
+            msg += f", ~{human_size(status.remaining_bytes)} to go"
+        info(f"  {msg}")
+    remaining = status.remaining_bytes
+    free = free_space(dest)
+    if remaining is not None and free is not None and free < remaining:
+        warn(
+            f"low disk space on {drive_letter(dest)}: {human_size(free)} free but "
+            f"~{human_size(remaining)} still to download -- it may fail partway."
+        )
 
 
 def parse_register(value: str) -> set[str]:
@@ -69,12 +89,43 @@ def add_model(
     convert: bool = False,
     register: str = "ollama,lmstudio",
     remote: str | None = None,
+    force: bool = False,
+    retries: int = 0,
 ) -> None:
     if "/" not in raw_repo:
         raise MdlError(
             f"'{raw_repo}' is not a valid Hugging Face repo id (expected owner/name).",
             hint="e.g. Qwen/Qwen3-32B",
         )
+    # Serialize concurrent adds of the *same* repo (a no-op under --dry-run, which writes nothing).
+    with repo_lock(raw_repo, enabled=not is_dry()) as acquired:
+        if not acquired:
+            raise MdlError(
+                f"another `mdl add` for '{raw_repo}' is already running.",
+                hint="Wait for it to finish (its download resumes), or add a different model.",
+            )
+        _add_model_locked(
+            cfg, library, raw_repo,
+            gguf_repo=gguf_repo, quant=quant, raw=raw, gguf=gguf,
+            convert=convert, register=register, remote=remote, force=force, retries=retries,
+        )
+
+
+def _add_model_locked(
+    cfg,
+    library: Library,
+    raw_repo: str,
+    *,
+    gguf_repo: str | None = None,
+    quant: str | None = None,
+    raw: bool = True,
+    gguf: bool = True,
+    convert: bool = False,
+    register: str = "ollama,lmstudio",
+    remote: str | None = None,
+    force: bool = False,
+    retries: int = 0,
+) -> None:
     quant = quant or cfg.default_quant
     runtimes = parse_register(register)
     _owner, name = split_repo_id(raw_repo)
@@ -88,9 +139,18 @@ def add_model(
 
     # --- 1. raw safetensors --------------------------------------------------------------
     if raw:
-        step(f"raw safetensors -> HF cache ({cfg.hf_home})")
-        hub.download_raw(cfg, raw_repo)
-        raw_done = True
+        status = hub.raw_status(cfg, raw_repo)
+        if status.state == "complete" and not force:
+            success(
+                f"raw already downloaded ({human_size(status.present_bytes)}, "
+                f"{status.present_files} files) -- skipping. [dim]--force to re-verify[/]"
+            )
+            raw_done = True
+        else:
+            step(f"raw safetensors -> HF cache ({cfg.hf_home})")
+            _report_and_preflight(status, cfg.hf_home, "raw")
+            hub.download_raw(cfg, raw_repo, retries=retries)
+            raw_done = True
 
     # --- 2. GGUF -------------------------------------------------------------------------
     if gguf:
@@ -105,8 +165,16 @@ def add_model(
         if gguf_repo:
             resolved_gguf_repo = gguf_repo
             target_dir = lmstudio_target_dir(cfg.gguf_dir, gguf_repo)
-            step(f"GGUF '{quant}' from {gguf_repo} -> {target_dir}")
-            hub.download_gguf(cfg, gguf_repo, quant, target_dir)
+            gstatus = hub.gguf_status(cfg, gguf_repo, quant, target_dir)
+            if gstatus.state == "complete" and not force:
+                success(
+                    f"GGUF '{quant}' already present ({human_size(gstatus.present_bytes)}) "
+                    f"-- skipping. [dim]--force to re-verify[/]"
+                )
+            else:
+                step(f"GGUF '{quant}' from {gguf_repo} -> {target_dir}")
+                _report_and_preflight(gstatus, cfg.gguf_dir, "gguf")
+                hub.download_gguf(cfg, gguf_repo, quant, target_dir, retries=retries)
         elif convert:
             target_dir = lmstudio_target_dir(cfg.gguf_dir, raw_repo)
             if remote:
@@ -117,7 +185,7 @@ def add_model(
                 snap = hub.snapshot_path(cfg, raw_repo)
                 if snap is None:
                     step("no local snapshot yet; downloading raw weights to convert ...")
-                    hub.download_raw(cfg, raw_repo)
+                    hub.download_raw(cfg, raw_repo, retries=retries)
                     raw_done = True  # download_raw ran unconditionally; weights are now cached
                     snap = hub.snapshot_path(cfg, raw_repo)
                 if snap is None and not is_dry():
@@ -176,7 +244,7 @@ def add_model(
 def _summary(cfg, model, raw_done, target_dir, quant, ollama_names, lmstudio_done) -> None:
     console.print("\n[bold]Summary[/]")
     console.print(f"  model     : {model}")
-    console.print(f"  raw       : {'H: HF cache' if raw_done else '[dim]skipped[/]'}")
+    console.print(f"  raw       : {(drive_letter(cfg.hf_home) or 'local') + ' HF cache' if raw_done else '[dim]skipped[/]'}")
     if target_dir:
         console.print(f"  gguf      : {quant} -> {target_dir}")
     else:

@@ -10,7 +10,8 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from .console import console, info, is_dry, plan, step, success, warn
 from .errors import MdlError
 from .hub import cache_dir
 from .library import Library, ModelRecord
-from .paths import drive_letter, human_size, path_size
+from .paths import drive_letter, human_size, lmstudio_target_dir, path_size
 from .registry import lmstudio, ollama
 
 _VALID_RUNTIMES = {"ollama", "lmstudio"}
@@ -118,6 +119,109 @@ def apply_removal(cfg, library: Library, removal: RemovalPlan) -> None:
     else:
         rec.updated_at = datetime.now().isoformat(timespec="seconds")
     library.save()
+
+
+# -- gc ------------------------------------------------------------------------------------
+@dataclass
+class GcItem:
+    kind: str
+    path: Path
+    drive: str
+    size: int
+
+
+@dataclass
+class GcPlan:
+    items: list[GcItem] = field(default_factory=list)
+    protected: list[Path] = field(default_factory=list)  # recently-active -> skipped for safety
+
+    def total(self) -> int:
+        return sum(i.size for i in self.items)
+
+    def is_empty(self) -> bool:
+        return not self.items
+
+
+def _scoped_roots(cfg, library: Library, model: str | None) -> list[Path]:
+    """Directories to sweep: a single model's stores, or the whole raw + gguf trees."""
+    if not model:
+        return [cfg.hf_home, cfg.gguf_dir]
+    rec = library.find(model)
+    if rec is not None:
+        roots = []
+        if rec.raw_repo:
+            roots.append(cache_dir(cfg, rec.raw_repo))
+        roots.append(rec.gguf_dir_for(cfg.gguf_dir))
+        return roots
+    if "/" in model:
+        return [cache_dir(cfg, model), lmstudio_target_dir(cfg.gguf_dir, model)]
+    raise MdlError(f"'{model}' is not in the library and is not a repo id.", hint="Run `mdl list`.")
+
+
+def build_gc_plan(cfg, library: Library, *, model: str | None = None, locks: bool = False, force: bool = False) -> GcPlan:
+    """Collect abandoned ``*.incomplete`` partials (and, with ``locks``, stale ``.lock`` files).
+
+    A partial touched within ``download_stall_timeout`` seconds is assumed to belong to a
+    live download and is *protected* (skipped) unless ``force`` -- so ``gc`` can't yank the
+    floor out from under a running ``mdl add``.
+    """
+    plan_out = GcPlan()
+    cutoff = time.time() - cfg.download_stall_timeout
+    seen: set[Path] = set()
+    for root in _scoped_roots(cfg, library, model):
+        if not root.exists():
+            continue
+        try:
+            partials = list(root.rglob("*.incomplete"))
+        except OSError:
+            partials = []
+        for f in partials:
+            if f in seen:
+                continue
+            seen.add(f)
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            if not force and st.st_mtime > cutoff:
+                plan_out.protected.append(f)
+                continue
+            plan_out.items.append(GcItem("incomplete", f, drive_letter(f), st.st_size))
+        if locks:
+            for lk in (root.rglob("*.lock") if root.exists() else []):
+                if lk in seen:
+                    continue
+                seen.add(lk)
+                try:
+                    plan_out.items.append(GcItem("lock", lk, drive_letter(lk), lk.stat().st_size))
+                except OSError:
+                    continue
+    return plan_out
+
+
+def render_gc_plan(plan_out: GcPlan) -> None:
+    console.print("[bold]Will reclaim:[/]")
+    for item in plan_out.items:
+        console.print(f"  [red]delete[/] {item.kind:<11} [{item.drive}] {item.path}  ({human_size(item.size)})")
+    if plan_out.items:
+        console.print(f"  [bold]total freed:[/] {human_size(plan_out.total())}")
+    for p in plan_out.protected:
+        console.print(f"  [yellow]skip[/] (recently active) {p}")
+
+
+def apply_gc(cfg, plan_out: GcPlan) -> None:
+    freed = 0
+    for item in plan_out.items:
+        if is_dry():
+            plan(f"delete {item.path}  ({human_size(item.size)} on {item.drive})")
+            continue
+        try:
+            item.path.unlink()
+            freed += item.size
+        except OSError as exc:
+            warn(f"could not delete {item.path}: {exc}")
+    if not is_dry():
+        success(f"reclaimed {human_size(freed)}.")
 
 
 def sync_all(cfg, library: Library) -> None:
