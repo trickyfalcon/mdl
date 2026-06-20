@@ -14,6 +14,7 @@ from .hub import find_hf_cli, whoami
 from .osenv import IS_WINDOWS, env_set_hint, exe
 from .paths import drive_letter, expand_path, same_path
 from .registry import lmstudio, ollama
+from .volume import kind as volume_kind
 
 OK, WARN, FAIL = "OK", "WARN", "FAIL"
 _STYLE = {OK: "green", WARN: "yellow", FAIL: "red"}
@@ -50,11 +51,15 @@ def _writable(path: Path) -> tuple[bool | None, str]:
 def check_drive(cfg, key: str, label: str) -> Check:
     path = cfg.expanded(key)
     drive = drive_letter(path) or "local"
+    vkind = volume_kind(path)
+    if vkind == "missing":
+        return Check(label, FAIL, f"{drive} ({path}) is not mounted", fix=f"Mount {drive} or change `{key}` in config.")
+    where = vkind if vkind != "unknown" else "local"
     res, detail = _writable(path)
     if res is None:
         return Check(label, FAIL, detail, fix=f"Mount {drive} or change `{key}` in config.")
     if res:
-        return Check(label, OK, f"{drive}  {path}  ({detail})")
+        return Check(label, OK, f"{drive}  {path}  ({where}, {detail})")
     return Check(
         label, FAIL, f"{path}: {detail}",
         fix=f"Check permissions / Controlled Folder Access for {path}.",

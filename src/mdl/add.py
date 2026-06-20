@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import convert as convert_mod
 from . import hub
+from . import volume
 from .console import console, info, is_dry, step, success, warn
 from .errors import MdlError
 from .library import Library
@@ -148,6 +149,9 @@ def _add_model_locked(
             raw_done = True
         else:
             step(f"raw safetensors -> HF cache ({cfg.hf_home})")
+            if not is_dry():
+                for w in volume.ensure_ready(cfg.hf_home, "raw HF cache"):
+                    warn(w)
             _report_and_preflight(status, cfg.hf_home, "raw")
             hub.download_raw(cfg, raw_repo, retries=retries)
             raw_done = True
@@ -173,6 +177,9 @@ def _add_model_locked(
                 )
             else:
                 step(f"GGUF '{quant}' from {gguf_repo} -> {target_dir}")
+                if not is_dry():
+                    for w in volume.ensure_ready(cfg.gguf_dir, "GGUF dir"):
+                        warn(w)
                 _report_and_preflight(gstatus, cfg.gguf_dir, "gguf")
                 hub.download_gguf(cfg, gguf_repo, quant, target_dir, retries=retries)
         elif convert:
