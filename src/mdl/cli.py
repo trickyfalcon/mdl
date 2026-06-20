@@ -10,7 +10,7 @@ from rich.table import Table
 
 from . import __version__
 from . import hub
-from .add import add_model
+from .add import add_model, resume_params
 from .config import CONFIG_PATH, DEFAULTS, PATH_KEYS, Config
 from .console import console, err_console, flags, info, success
 from .convert import convert_model
@@ -81,6 +81,26 @@ def add(
         gguf_repo=gguf_repo, quant=quant, raw=raw, gguf=gguf,
         convert=convert, register=register, remote=remote, force=force, retries=retries,
     )
+
+
+# -- resume --------------------------------------------------------------------------------
+@app.command()
+def resume(
+    model: str = typer.Argument(..., help="Model id / name as shown by `mdl list` (or a repo id)."),
+    gguf_repo: Optional[str] = typer.Option(None, "--gguf-repo", help="Override the GGUF repo."),
+    quant: Optional[str] = typer.Option(None, "--quant", help="Override the quant."),
+    raw: Optional[bool] = typer.Option(None, "--raw/--no-raw", help="Force raw on/off (default: infer)."),
+    gguf: Optional[bool] = typer.Option(None, "--gguf/--no-gguf", help="Force GGUF on/off (default: infer)."),
+    register: Optional[str] = typer.Option(None, "--register", help="Runtimes to wire up (default: as recorded)."),
+    retries: int = typer.Option(3, "--retries", help="Retry a failed download N times (resuming)."),
+) -> None:
+    """Continue an interrupted download. Picks up from on-disk partials; infers settings from
+    the library when the model is tracked (explicit flags override)."""
+    cfg = _load_config()
+    lib = Library.load()
+    params = resume_params(lib, model, gguf_repo=gguf_repo, quant=quant, raw=raw, gguf=gguf, register=register)
+    repo = params.pop("raw_repo")
+    add_model(cfg, lib, repo, **params, retries=retries)
 
 
 # -- list ----------------------------------------------------------------------------------
