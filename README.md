@@ -10,8 +10,10 @@ runtime with minimal duplication:
 | **LM Studio** | GGUFs under `<publisher>\<model>\file.gguf` | points LM Studio's models folder at the GGUF master (no copy, no symlink) |
 | **Ollama** | its own blob store | imports the GGUF via a Modelfile (`ollama create`) |
 
-It is built for **native Windows + PowerShell** (paths, drives, `%VARS%`, `.exe` tools, no
-symlinks), packaged and run with [`uv`](https://docs.astral.sh/uv/).
+It started as **native Windows + PowerShell** (paths, drives, `%VARS%`, `.exe` tools, no
+symlinks) and now also runs on **macOS and Linux** (POSIX paths, `~/models/...` defaults — see
+[Using a NAS / network storage](#using-a-nas--network-storage) for sharing one library across
+machines). Packaged and run with [`uv`](https://docs.astral.sh/uv/).
 
 ---
 
@@ -100,6 +102,43 @@ setx OLLAMA_MODELS "D:\models\ollama"   # keep Ollama's blob copies on the fast 
 
 (mdl injects `HF_HOME` and `HF_XET_HIGH_PERFORMANCE=1` into its own download subprocesses, so you
 don't strictly need them set globally — but setting `HF_HOME` makes your other tools agree.)
+
+---
+
+## Using a NAS / network storage
+
+mdl's stores are just paths, so you can keep your whole library on a **NAS** and share it across
+every machine — Windows, macOS, Linux — with **no cloud and no second copy**. (Public models
+already live on the Hugging Face Hub, the free source of truth; re-hosting them on S3/Azure would
+just be redundant cost on a provider you don't control. A NAS is storage you *own*.)
+
+**1. Mount the share, then point mdl at it:**
+
+| OS | Mount it as | Example config value |
+| --- | --- | --- |
+| Windows | a mapped drive or UNC path | `Z:\models\gguf` or `\\synology\models\gguf` |
+| macOS | `/Volumes/<share>` (Finder → Connect to Server) | `/Volumes/models/gguf` |
+| Linux | an `/mnt` or `/media` mount (SMB/NFS via `/etc/fstab`) | `/mnt/nas/models/gguf` |
+
+```bash
+mdl config set hf_home  /mnt/nas/models/hf          # POSIX
+mdl config set gguf_dir /mnt/nas/models/gguf
+mdl config set gguf_dir '\\synology\models\gguf'    # Windows UNC
+mdl sync                                            # re-point the runtimes at the new location
+```
+
+**2. mdl guards the network store automatically:**
+
+* `mdl doctor` labels each store **local** or **network**, and **FAIL**s if its volume isn't mounted.
+* Before any large download, `mdl add` **fails fast** when the destination volume is unmounted or
+  not writable — so an 800 GB pull never silently fills your system disk or writes into a dead
+  mount point. On a network store mdl drops a small `.mdl-volume` marker and refuses to write if a
+  later run finds the folder empty and unmarked (the tell-tale of a dropped mount).
+
+> **Notes.** Runtimes read the GGUF directly over the mount, so GGUF load speed depends on your
+> network — keep Ollama's blob store (`OLLAMA_MODELS`) local even when `gguf_dir` is on the NAS.
+> Windows drives/UNC are classified exactly; deeply nested POSIX mount paths get a best-effort
+> heuristic warning rather than a hard stop.
 
 ---
 
